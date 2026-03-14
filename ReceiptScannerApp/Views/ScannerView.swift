@@ -190,6 +190,15 @@ struct ScannerView: View {
             // Totals
             Section("Totals") {
                 HStack {
+                    Text("Items Total")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    let itemsSum = viewModel.editItems.compactMap { Double($0.price) }.reduce(0, +)
+                    Text(String(format: "$%.2f", itemsSum))
+                        .foregroundStyle(.secondary)
+                }
+
+                HStack {
                     Text("Tax")
                     Spacer()
                     TextField("0.00", text: $viewModel.editTax)
@@ -199,7 +208,7 @@ struct ScannerView: View {
                 }
 
                 HStack {
-                    Text("Total")
+                    Text("Total Amount")
                         .fontWeight(.semibold)
                     Spacer()
                     TextField("0.00", text: $viewModel.editTotal)
