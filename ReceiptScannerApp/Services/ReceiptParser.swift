@@ -29,6 +29,55 @@ struct ReceiptParser {
     ]
 
     // Lines that are just supplementary info (quantity breakdowns, barcodes)
+    /// Check if a line is a discount (negative amount or "discount"/"PWP" keyword with price)
+    private static func isDiscountLine(_ line: String) -> Bool {
+        let lower = line.lowercased()
+        // "- 13.80" or "-0.22"
+        if line.hasPrefix("-") || line.hasPrefix("- ") {
+            return true
+        }
+        // "PWP Discount" or similar with a price nearby
+        if lower.contains("discount") || lower.contains("pwp") {
+            return true
+        }
+        // "2 for $2.58" — override price line
+        if lower.contains("for $") || lower.contains("for$") {
+            return true
+        }
+        return false
+    }
+
+    /// Extract the discount amount from a discount line
+    private static func extractDiscountAmount(from line: String) -> Double? {
+        let lower = line.lowercased()
+
+        // "- 13.80" or "-0.22" → positive amount to subtract
+        if line.hasPrefix("-") {
+            let cleaned = line.replacingOccurrences(of: "-", with: "").trimmingCharacters(in: .whitespaces)
+            if let p = extractPrice(from: cleaned) {
+                return p
+            }
+            // Try parsing directly: "-0.22"
+            if let val = Double(cleaned) {
+                return val
+            }
+        }
+
+        // "2 for $2.58" → replace the last item's price with this value
+        // Return nil here; handled separately
+        if lower.contains("for $") || lower.contains("for$") {
+            // Extract the target price after "for"
+            if let regex = try? NSRegularExpression(pattern: #"for\s*\$?\s*(\d+\.\d{2})"#, options: .caseInsensitive),
+               let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+               let range = Range(match.range(at: 1), in: line),
+               let targetPrice = Double(line[range]) {
+                return nil // Handled as price override below
+            }
+        }
+
+        return nil
+    }
+
     private static func isSupplementaryLine(_ line: String) -> Bool {
         let lower = line.lowercased()
         // Quantity breakdown: "2 x 13.80" or "2 × 1.40" or "10 X UDE" or "2% 1.90" or "6 x"
@@ -37,18 +86,6 @@ struct ReceiptParser {
         }
         // Barcode: line is mostly digits (8+ digits)
         if let _ = line.range(of: #"^\d{8,}$"#, options: .regularExpression) {
-            return true
-        }
-        // "2 for $X.XX" discount line
-        if lower.contains("for $") || lower.contains("for$") {
-            return true
-        }
-        // PWP Discount or similar
-        if lower.contains("discount") || lower.contains("pwp") {
-            return true
-        }
-        // Line starting with "-" (discount amount)
-        if line.hasPrefix("-") || line.hasPrefix("- ") {
             return true
         }
         // Stars or dots
@@ -117,6 +154,36 @@ struct ReceiptParser {
         while i < trimmedLines.count {
             let line = trimmedLines[i]
             let lower = line.lowercased()
+
+            // Handle discount lines: subtract from last item or override price
+            if isDiscountLine(line) {
+                if !indexedItems.isEmpty {
+                    let lastIdx = indexedItems.count - 1
+                    let oldPrice = indexedItems[lastIdx].price
+
+                    // "2 for $2.58" → override item price with the discounted total
+                    if lower.contains("for $") || lower.contains("for$") {
+                        if let regex = try? NSRegularExpression(pattern: #"for\s*\$?\s*(\d+[.,]\d{2})"#, options: .caseInsensitive),
+                           let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+                           let range = Range(match.range(at: 1), in: line),
+                           let newPrice = Double(String(line[range]).replacingOccurrences(of: ",", with: ".")) {
+                            indexedItems[lastIdx].price = newPrice
+                            print("[Parser] [\(i)] PRICE OVERRIDE: '\(indexedItems[lastIdx].name)' \(oldPrice) → \(newPrice) (\(line))")
+                        } else {
+                            print("[Parser] [\(i)] SKIP discount: \(line)")
+                        }
+                    } else if let discountAmount = extractDiscountAmount(from: line) {
+                        indexedItems[lastIdx].price = oldPrice - discountAmount
+                        print("[Parser] [\(i)] DISCOUNT: -\(discountAmount) on '\(indexedItems[lastIdx].name)' (\(oldPrice) → \(indexedItems[lastIdx].price))")
+                    } else {
+                        print("[Parser] [\(i)] SKIP discount: \(line)")
+                    }
+                } else {
+                    print("[Parser] [\(i)] SKIP discount (no item): \(line)")
+                }
+                i += 1
+                continue
+            }
 
             // Skip supplementary lines
             if isSupplementaryLine(line) {
