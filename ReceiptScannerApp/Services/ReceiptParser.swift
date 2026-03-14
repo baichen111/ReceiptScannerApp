@@ -145,10 +145,11 @@ struct ReceiptParser {
 
     /// Extract item name by removing the price portion and any surrounding noise
     private static func extractItemName(from line: String) -> String {
-        // Remove trailing price patterns (with optional tax code letter)
+        // Remove ALL price patterns (not just trailing)
         let patterns = [
             #"\s*[-]?\$?\s*\d{1,3}(?:,\d{3})*\.\d{2}\s*[A-Za-z]?\s*$"#,
             #"\$\s*\d{1,3}(?:,\d{3})*\.\d{2}"#,
+            #"\d+\.\d{2}\s*$"#,
         ]
 
         var cleaned = line
@@ -161,8 +162,18 @@ struct ReceiptParser {
             )
         }
 
-        // Remove leading quantity patterns like "1 x " or "2@ "
-        let qtyPattern = #"^\d+\s*[x@]\s*"#
+        // Remove leading item number like "1." or "12."
+        let numPattern = #"^\d{1,3}\.\s*"#
+        if let numRegex = try? NSRegularExpression(pattern: numPattern) {
+            cleaned = numRegex.stringByReplacingMatches(
+                in: cleaned,
+                range: NSRange(cleaned.startIndex..., in: cleaned),
+                withTemplate: ""
+            )
+        }
+
+        // Remove leading quantity patterns like "1 x " or "2@ " or "2 x 1.40"
+        let qtyPattern = #"^\d+\s*[x@]\s*[\d.]*\s*"#
         if let qtyRegex = try? NSRegularExpression(pattern: qtyPattern, options: .caseInsensitive) {
             cleaned = qtyRegex.stringByReplacingMatches(
                 in: cleaned,
@@ -171,7 +182,27 @@ struct ReceiptParser {
             )
         }
 
-        // Remove leading/trailing non-alphanumeric characters
+        // Remove product/barcode numbers (long digit sequences)
+        let barcodePattern = #"\b\d{6,}\b"#
+        if let barcodeRegex = try? NSRegularExpression(pattern: barcodePattern) {
+            cleaned = barcodeRegex.stringByReplacingMatches(
+                in: cleaned,
+                range: NSRange(cleaned.startIndex..., in: cleaned),
+                withTemplate: ""
+            )
+        }
+
+        // Remove quantity info like "Qty 2" or "Qty: 1"
+        let qtyInfoPattern = #"(?i)\bqty\s*:?\s*\d+"#
+        if let qtyInfoRegex = try? NSRegularExpression(pattern: qtyInfoPattern) {
+            cleaned = qtyInfoRegex.stringByReplacingMatches(
+                in: cleaned,
+                range: NSRange(cleaned.startIndex..., in: cleaned),
+                withTemplate: ""
+            )
+        }
+
+        // Clean up
         cleaned = cleaned.trimmingCharacters(in: .whitespaces)
         cleaned = cleaned.trimmingCharacters(in: .punctuationCharacters)
         cleaned = cleaned.trimmingCharacters(in: .whitespaces)
