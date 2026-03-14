@@ -112,6 +112,7 @@ struct ReceiptParser {
         var foundItemSection = false  // True once we've seen first actual item
         var orphanNames: [(index: Int, name: String)] = []  // Names without prices
         var orphanPrices: [(index: Int, price: Double)] = [] // Prices without names
+        var indexedItems: [(lineIndex: Int, name: String, price: Double)] = [] // Track line order
 
         while i < trimmedLines.count {
             let line = trimmedLines[i]
@@ -177,7 +178,7 @@ struct ReceiptParser {
             if hasPrice && isNameLine {
                 // Name and price on the same line
                 foundItemSection = true
-                result.items.append((name: nameFromLine, price: price!))
+                indexedItems.append((lineIndex: i, name: nameFromLine, price: price!))
                 print("[Parser] [\(i)] ITEM (same line): '\(nameFromLine)' = \(price!)")
                 i += 1
                 continue
@@ -202,7 +203,7 @@ struct ReceiptParser {
 
                 if let p = priceVal {
                     foundItemSection = true
-                    result.items.append((name: nameFromLine, price: p))
+                    indexedItems.append((lineIndex: i, name: nameFromLine, price: p))
                     print("[Parser] [\(i)] ITEM (name + price below): '\(nameFromLine)' = \(p)")
                     i += skip + 1 // Skip past the price line
                     continue
@@ -265,9 +266,9 @@ struct ReceiptParser {
                 if let name = nameVal {
                     // Check this wasn't already added
                     foundItemSection = true
-                    let alreadyAdded = result.items.contains { $0.name == name }
+                    let alreadyAdded = indexedItems.contains { $0.name == name }
                     if !alreadyAdded {
-                        result.items.append((name: name, price: price!))
+                        indexedItems.append((lineIndex: i, name: name, price: price!))
                         print("[Parser] [\(i)] ITEM (price + name nearby): '\(name)' = \(price!)")
                     } else {
                         print("[Parser] [\(i)] SKIP duplicate: '\(name)'")
@@ -290,7 +291,7 @@ struct ReceiptParser {
 
             for orphanName in orphanNames {
                 // Already added by another path?
-                let alreadyAdded = result.items.contains { $0.name == orphanName.name }
+                let alreadyAdded = indexedItems.contains { $0.name == orphanName.name }
                 if alreadyAdded { continue }
 
                 // Find the closest orphan price (within 10 lines)
@@ -307,12 +308,16 @@ struct ReceiptParser {
 
                 if let pi = bestIdx {
                     let p = orphanPrices[pi].price
-                    result.items.append((name: orphanName.name, price: p))
+                    indexedItems.append((lineIndex: orphanName.index, name: orphanName.name, price: p))
                     usedPrices.insert(pi)
                     print("[Parser] SECOND PASS: '\(orphanName.name)' (line \(orphanName.index)) = \(p) (line \(orphanPrices[pi].index), dist=\(bestDist))")
                 }
             }
         }
+
+        // Sort items by line index to match receipt order
+        indexedItems.sort { $0.lineIndex < $1.lineIndex }
+        result.items = indexedItems.map { (name: $0.name, price: $0.price) }
 
         // If no total found, try to use $207.63-style line
         if result.total == nil {
