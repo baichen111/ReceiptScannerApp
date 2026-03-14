@@ -31,9 +31,8 @@ struct ReceiptParser {
     // Lines that are just supplementary info (quantity breakdowns, barcodes)
     private static func isSupplementaryLine(_ line: String) -> Bool {
         let lower = line.lowercased()
-        // Quantity breakdown: "2 x 13.80" or "2 × 1.40" or "4 x 0.05"
-        if let _ = try? NSRegularExpression(pattern: #"^\d+\s*[x×@]\s*\d"#, options: .caseInsensitive),
-           lower.range(of: #"^\d+\s*[x×@]\s*\d"#, options: .regularExpression, range: nil, locale: nil) != nil {
+        // Quantity breakdown: "2 x 13.80" or "2 × 1.40" or "10 X UDE" or "2% 1.90" or "6 x"
+        if lower.range(of: #"^\d+\s*[x×@%]\s*"#, options: [.regularExpression, .caseInsensitive]) != nil {
             return true
         }
         // Barcode: line is mostly digits (8+ digits)
@@ -54,6 +53,10 @@ struct ReceiptParser {
         }
         // Stars or dots
         if line.allSatisfy({ $0 == "*" || $0 == "." || $0 == " " }) {
+            return true
+        }
+        // Bare item numbers: "22." or "23" (just digits with optional period)
+        if line.range(of: #"^\d{1,3}\.?$"#, options: .regularExpression) != nil {
             return true
         }
         return false
@@ -208,12 +211,36 @@ struct ReceiptParser {
                     break
                 }
 
+                // If no name found above, look ahead for name (price before name pattern)
+                if nameVal == nil {
+                    var k = i + 1
+                    while k < trimmedLines.count {
+                        let nextLine = trimmedLines[k]
+                        if isSupplementaryLine(nextLine) {
+                            k += 1
+                            continue
+                        }
+                        let nextName = extractItemName(from: nextLine)
+                        if nextName.count >= 3 && extractPrice(from: nextLine) == nil {
+                            // Check it's not an excluded keyword line
+                            let nextLower = nextLine.lowercased()
+                            let nextExcluded = excludeKeywords.contains { nextLower.contains($0) }
+                            if !nextExcluded {
+                                nameVal = nextName
+                                // Mark that we consumed the next name line
+                                i = k // will be incremented at end of loop
+                            }
+                        }
+                        break
+                    }
+                }
+
                 if let name = nameVal {
                     // Check this wasn't already added
                     let alreadyAdded = result.items.contains { $0.name == name }
                     if !alreadyAdded {
                         result.items.append((name: name, price: price!))
-                        print("[Parser] [\(i)] ITEM (price + name above): '\(name)' = \(price!)")
+                        print("[Parser] [\(i)] ITEM (price + name nearby): '\(name)' = \(price!)")
                     } else {
                         print("[Parser] [\(i)] SKIP duplicate: '\(name)'")
                     }
@@ -250,14 +277,30 @@ struct ReceiptParser {
     }
 
     /// Extract price from a line (finds the last decimal number)
+    /// Handles both "4.60" and "4,60" (comma as decimal separator)
     private static func extractPrice(from line: String) -> Double? {
-        let pattern = #"\$?\s*(\d{1,3}(?:,\d{3})*\.\d{2})"#
-        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
-        let matches = regex.matches(in: line, range: NSRange(line.startIndex..., in: line))
-        guard let match = matches.last,
-              let range = Range(match.range(at: 1), in: line) else { return nil }
-        let priceStr = line[range].replacingOccurrences(of: ",", with: "")
-        return Double(priceStr)
+        // Try period decimal first: 4.60, 1,234.56
+        let dotPattern = #"\$?\s*(\d{1,3}(?:,\d{3})*\.\d{2})"#
+        if let regex = try? NSRegularExpression(pattern: dotPattern) {
+            let matches = regex.matches(in: line, range: NSRange(line.startIndex..., in: line))
+            if let match = matches.last,
+               let range = Range(match.range(at: 1), in: line) {
+                let priceStr = line[range].replacingOccurrences(of: ",", with: "")
+                return Double(priceStr)
+            }
+        }
+        // Try comma decimal: 4,60 (common in some receipts/OCR errors)
+        let commaPattern = #"\$?\s*(\d{1,3}),(\d{2})\b"#
+        if let regex = try? NSRegularExpression(pattern: commaPattern) {
+            let matches = regex.matches(in: line, range: NSRange(line.startIndex..., in: line))
+            if let match = matches.last,
+               let intRange = Range(match.range(at: 1), in: line),
+               let decRange = Range(match.range(at: 2), in: line) {
+                let priceStr = "\(line[intRange]).\(line[decRange])"
+                return Double(priceStr)
+            }
+        }
+        return nil
     }
 
     /// Extract item name from a line by removing numbers, prices, and line prefixes
@@ -271,8 +314,13 @@ struct ReceiptParser {
             )
         }
 
-        // Remove all prices
+        // Remove all prices (both period and comma decimal)
         if let regex = try? NSRegularExpression(pattern: #"\$?\s*\d{1,3}(?:,\d{3})*\.\d{2}"#) {
+            cleaned = regex.stringByReplacingMatches(
+                in: cleaned, range: NSRange(cleaned.startIndex..., in: cleaned), withTemplate: ""
+            )
+        }
+        if let regex = try? NSRegularExpression(pattern: #"\$?\s*\d{1,3},\d{2}\b"#) {
             cleaned = regex.stringByReplacingMatches(
                 in: cleaned, range: NSRange(cleaned.startIndex..., in: cleaned), withTemplate: ""
             )
@@ -285,8 +333,8 @@ struct ReceiptParser {
             )
         }
 
-        // Remove quantity patterns "2 x" or "4 X"
-        if let regex = try? NSRegularExpression(pattern: #"\d+\s*[x×@]\s*"#, options: .caseInsensitive) {
+        // Remove standalone leading quantity patterns "2 x " or "4 X " (not inline like "6X60ML")
+        if let regex = try? NSRegularExpression(pattern: #"^\d+\s+[x×@]\s+"#, options: .caseInsensitive) {
             cleaned = regex.stringByReplacingMatches(
                 in: cleaned, range: NSRange(cleaned.startIndex..., in: cleaned), withTemplate: ""
             )
