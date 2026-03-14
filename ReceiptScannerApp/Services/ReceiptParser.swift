@@ -315,6 +315,30 @@ struct ReceiptParser {
             }
         }
 
+        // Merge short item names with adjacent orphan name fragments
+        // e.g., item "SOF" (line 124) + orphan "ISS SP TIS 3PX10X1305" (line 123) → "SOF ISS SP TIS 3PX10X1305"
+        let usedOrphanIndices = Set(indexedItems.map { $0.lineIndex })
+        for idx in indexedItems.indices {
+            let item = indexedItems[idx]
+            if item.name.count < 6 {
+                // Look for adjacent orphan name fragments within 2 lines
+                for orphan in orphanNames {
+                    if usedOrphanIndices.contains(orphan.index) { continue }
+                    let dist = abs(orphan.index - item.lineIndex)
+                    if dist <= 2 && orphan.name.count >= 3 {
+                        // Merge: put the item number line's name first, append the fragment
+                        if orphan.index < item.lineIndex {
+                            indexedItems[idx] = (lineIndex: item.lineIndex, name: item.name + " " + orphan.name, price: item.price)
+                        } else {
+                            indexedItems[idx] = (lineIndex: item.lineIndex, name: item.name + " " + orphan.name, price: item.price)
+                        }
+                        print("[Parser] MERGE: '\(item.name)' + '\(orphan.name)' → '\(indexedItems[idx].name)'")
+                        break
+                    }
+                }
+            }
+        }
+
         // Sort items by line index to match receipt order
         indexedItems.sort { $0.lineIndex < $1.lineIndex }
         result.items = indexedItems.map { (name: $0.name, price: $0.price) }
