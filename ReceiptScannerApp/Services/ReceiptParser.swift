@@ -22,6 +22,7 @@ struct ReceiptParser {
         "card", "account", "approved", "transaction",
         "phone", "tel", "fax", "www", "http",
         "member", "reward", "points", "loyalty",
+        "net amount", "rounding",
     ]
 
     static func parse(lines: [String]) -> ParsedReceipt {
@@ -40,7 +41,7 @@ struct ReceiptParser {
         // --- Extract store name (first lines before any price appears) ---
         var storeLines: [String] = []
         for line in trimmedLines {
-            if extractPrice(from: line) != nil {
+            if extractLastPrice(from: line) != nil {
                 break
             }
             storeLines.append(line)
@@ -57,7 +58,7 @@ struct ReceiptParser {
         for line in trimmedLines {
             let lower = line.lowercased()
 
-            guard let price = extractPrice(from: line) else {
+            guard let price = extractLastPrice(from: line) else {
                 continue
             }
 
@@ -95,11 +96,11 @@ struct ReceiptParser {
             }
 
             // This is likely a regular item
-            if !itemName.isEmpty {
+            if !itemName.isEmpty && itemName.count >= 2 {
                 result.items.append((name: itemName, price: price))
                 print("[Parser]   -> ITEM added")
             } else {
-                print("[Parser]   -> SKIPPED (empty name)")
+                print("[Parser]   -> SKIPPED (name too short: '\(itemName)')")
             }
         }
 
@@ -115,46 +116,29 @@ struct ReceiptParser {
 
     // MARK: - Helpers
 
-    /// Extract price from a line — tries multiple patterns
-    private static func extractPrice(from line: String) -> Double? {
-        // Pattern 1: Price at end of line like "MILK 2% 3.99" or "MILK $3.99" or "MILK 3.99 F"
-        // Pattern 2: Price with $ anywhere like "$3.99"
-        // Pattern 3: Price with comma thousands like "1,234.56"
-        let patterns = [
-            // Price at end, optionally followed by a single letter (tax code) and spaces
-            #"[-]?\$?\s*(\d{1,3}(?:,\d{3})*\.\d{2})\s*[A-Za-z]?\s*$"#,
-            // Price with $ sign anywhere in line
-            #"\$\s*(\d{1,3}(?:,\d{3})*\.\d{2})"#,
-            // Simple price at end
-            #"(\d+\.\d{2})\s*$"#,
-        ]
+    /// Find ALL prices in a line, return the LAST one (usually the line total)
+    private static func extractLastPrice(from line: String) -> Double? {
+        let pattern = #"\$?\s*(\d{1,3}(?:,\d{3})*\.\d{2})"#
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let matches = regex.matches(in: line, range: NSRange(line.startIndex..., in: line))
 
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
-            // Find the LAST match in the line (prices are usually at the end)
-            let matches = regex.matches(in: line, range: NSRange(line.startIndex..., in: line))
-            guard let match = matches.last,
-                  let range = Range(match.range(at: 1), in: line) else { continue }
-            let priceStr = line[range].replacingOccurrences(of: ",", with: "")
-            if let price = Double(priceStr) {
-                return price
-            }
-        }
-        return nil
+        // Return the last price found (line total, not unit price)
+        guard let match = matches.last,
+              let range = Range(match.range(at: 1), in: line) else { return nil }
+        let priceStr = line[range].replacingOccurrences(of: ",", with: "")
+        return Double(priceStr)
     }
 
-    /// Extract item name by removing the price portion and any surrounding noise
+    /// Extract item name: find the longest alphabetic substring in the line
     private static func extractItemName(from line: String) -> String {
-        // Remove ALL price patterns (not just trailing)
-        let patterns = [
-            #"\s*[-]?\$?\s*\d{1,3}(?:,\d{3})*\.\d{2}\s*[A-Za-z]?\s*$"#,
-            #"\$\s*\d{1,3}(?:,\d{3})*\.\d{2}"#,
-            #"\d+\.\d{2}\s*$"#,
-        ]
+        // Strategy: Extract all the "word" segments (letters, spaces, hyphens, common punctuation)
+        // that sit between numeric/price segments.
 
         var cleaned = line
-        for pattern in patterns {
-            guard let regex = try? NSRegularExpression(pattern: pattern) else { continue }
+
+        // Step 1: Remove the last price (line total) from the end
+        let trailingPrice = #"\s*\$?\s*\d{1,3}(?:,\d{3})*\.\d{2}\s*[A-Za-z]?\s*$"#
+        if let regex = try? NSRegularExpression(pattern: trailingPrice) {
             cleaned = regex.stringByReplacingMatches(
                 in: cleaned,
                 range: NSRange(cleaned.startIndex..., in: cleaned),
@@ -162,51 +146,81 @@ struct ReceiptParser {
             )
         }
 
-        // Remove leading item number like "1." or "12."
-        let numPattern = #"^\d{1,3}\.\s*"#
-        if let numRegex = try? NSRegularExpression(pattern: numPattern) {
-            cleaned = numRegex.stringByReplacingMatches(
+        // Step 2: Remove leading item numbers like "1." or "12." or "1 "
+        let leadingNum = #"^\d{1,3}[.\s]\s*"#
+        if let regex = try? NSRegularExpression(pattern: leadingNum) {
+            cleaned = regex.stringByReplacingMatches(
                 in: cleaned,
                 range: NSRange(cleaned.startIndex..., in: cleaned),
                 withTemplate: ""
             )
         }
 
-        // Remove leading quantity patterns like "1 x " or "2@ " or "2 x 1.40"
-        let qtyPattern = #"^\d+\s*[x@]\s*[\d.]*\s*"#
-        if let qtyRegex = try? NSRegularExpression(pattern: qtyPattern, options: .caseInsensitive) {
-            cleaned = qtyRegex.stringByReplacingMatches(
+        // Step 3: Remove leading quantity like "2 x 13.80" or "4 x 0.06"
+        let leadingQty = #"^\d+\s*[xX@]\s*\d*\.?\d*\s*"#
+        if let regex = try? NSRegularExpression(pattern: leadingQty) {
+            cleaned = regex.stringByReplacingMatches(
                 in: cleaned,
                 range: NSRange(cleaned.startIndex..., in: cleaned),
                 withTemplate: ""
             )
         }
 
-        // Remove product/barcode numbers (long digit sequences)
-        let barcodePattern = #"\b\d{6,}\b"#
-        if let barcodeRegex = try? NSRegularExpression(pattern: barcodePattern) {
-            cleaned = barcodeRegex.stringByReplacingMatches(
+        // Step 4: Remove barcode/product codes (8+ digit numbers)
+        let barcode = #"\b\d{8,}\b"#
+        if let regex = try? NSRegularExpression(pattern: barcode) {
+            cleaned = regex.stringByReplacingMatches(
                 in: cleaned,
                 range: NSRange(cleaned.startIndex..., in: cleaned),
                 withTemplate: ""
             )
         }
 
-        // Remove quantity info like "Qty 2" or "Qty: 1"
-        let qtyInfoPattern = #"(?i)\bqty\s*:?\s*\d+"#
-        if let qtyInfoRegex = try? NSRegularExpression(pattern: qtyInfoPattern) {
-            cleaned = qtyInfoRegex.stringByReplacingMatches(
+        // Step 5: Remove remaining standalone prices that aren't part of a word
+        let midPrice = #"\b\d{1,3}\.\d{2}\b"#
+        if let regex = try? NSRegularExpression(pattern: midPrice) {
+            cleaned = regex.stringByReplacingMatches(
                 in: cleaned,
                 range: NSRange(cleaned.startIndex..., in: cleaned),
                 withTemplate: ""
             )
         }
 
-        // Clean up
+        // Step 6: Remove "Qty" info
+        let qtyInfo = #"(?i)\bqty\s*:?\s*\d+"#
+        if let regex = try? NSRegularExpression(pattern: qtyInfo) {
+            cleaned = regex.stringByReplacingMatches(
+                in: cleaned,
+                range: NSRange(cleaned.startIndex..., in: cleaned),
+                withTemplate: ""
+            )
+        }
+
+        // Step 7: Extract the best text segment — find the longest run of letters/spaces
+        // This handles cases where the name is embedded between numbers
+        let wordPattern = #"[A-Za-z][A-Za-z0-9\s/&%'.-]{1,}"#
+        if let regex = try? NSRegularExpression(pattern: wordPattern) {
+            let matches = regex.matches(in: cleaned, range: NSRange(cleaned.startIndex..., in: cleaned))
+            // Pick the longest match as the item name
+            var bestMatch = ""
+            for match in matches {
+                if let range = Range(match.range, in: cleaned) {
+                    let candidate = String(cleaned[range]).trimmingCharacters(in: .whitespaces)
+                    if candidate.count > bestMatch.count {
+                        bestMatch = candidate
+                    }
+                }
+            }
+            if !bestMatch.isEmpty {
+                return bestMatch.trimmingCharacters(in: .punctuationCharacters)
+                    .trimmingCharacters(in: .whitespaces)
+            }
+        }
+
+        // Fallback: just trim everything
         cleaned = cleaned.trimmingCharacters(in: .whitespaces)
         cleaned = cleaned.trimmingCharacters(in: .punctuationCharacters)
         cleaned = cleaned.trimmingCharacters(in: .whitespaces)
-
         return cleaned
     }
 
@@ -234,7 +248,6 @@ struct ReceiptParser {
                 let dateStr = String(line[range])
                 formatter.dateFormat = format
                 if let date = formatter.date(from: dateStr) {
-                    // Sanity check: date should be within last 5 years
                     let fiveYearsAgo = Calendar.current.date(byAdding: .year, value: -5, to: Date())!
                     let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: Date())!
                     if date > fiveYearsAgo && date < tomorrow {
