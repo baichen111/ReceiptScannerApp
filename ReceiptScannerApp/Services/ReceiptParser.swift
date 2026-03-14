@@ -352,22 +352,22 @@ struct ReceiptParser {
         }
 
         // --- Second pass: match orphan names with nearest orphan prices ---
+        var usedPriceIndices = Set<Int>() // indices into orphanPrices
         if !orphanNames.isEmpty && !orphanPrices.isEmpty {
             print("[Parser] --- Second pass: \(orphanNames.count) orphan names, \(orphanPrices.count) orphan prices ---")
-            var usedPrices = Set<Int>() // indices into orphanPrices
 
             for orphanName in orphanNames {
                 // Already added by another path?
                 let alreadyAdded = indexedItems.contains { $0.name == orphanName.name }
                 if alreadyAdded { continue }
 
-                // Find the closest orphan price (within 10 lines)
+                // Find the closest orphan price (within 5 lines to avoid wrong matches)
                 var bestIdx: Int? = nil
                 var bestDist = Int.max
                 for (pi, orphanPrice) in orphanPrices.enumerated() {
-                    if usedPrices.contains(pi) { continue }
+                    if usedPriceIndices.contains(pi) { continue }
                     let dist = abs(orphanPrice.index - orphanName.index)
-                    if dist < bestDist && dist <= 10 {
+                    if dist < bestDist && dist <= 5 {
                         bestDist = dist
                         bestIdx = pi
                     }
@@ -376,10 +376,17 @@ struct ReceiptParser {
                 if let pi = bestIdx {
                     let p = orphanPrices[pi].price
                     indexedItems.append((lineIndex: orphanName.index, name: orphanName.name, price: p))
-                    usedPrices.insert(pi)
+                    usedPriceIndices.insert(pi)
                     print("[Parser] SECOND PASS: '\(orphanName.name)' (line \(orphanName.index)) = \(p) (line \(orphanPrices[pi].index), dist=\(bestDist))")
                 }
             }
+        }
+
+        // Add remaining unmatched orphan prices as "Unknown Item" so totals add up
+        for (pi, orphanPrice) in orphanPrices.enumerated() {
+            if usedPriceIndices.contains(pi) { continue }
+            indexedItems.append((lineIndex: orphanPrice.index, name: "Unknown Item", price: orphanPrice.price))
+            print("[Parser] UNMATCHED PRICE → 'Unknown Item' = \(orphanPrice.price) (line \(orphanPrice.index))")
         }
 
         // Merge short item names with adjacent orphan name fragments
