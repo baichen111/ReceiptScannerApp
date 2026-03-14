@@ -95,6 +95,18 @@ struct ReceiptParser {
         // Strategy: Item name is on one line, price is on the next line (or same line).
         // Walk through lines. When we find a price-only line, look back for the item name.
 
+        // Pre-scan: find the "Total Amount" line to know where items end
+        var totalSectionStart = trimmedLines.count
+        for (idx, line) in trimmedLines.enumerated() {
+            let l = line.lowercased()
+            if l.contains("total amount") || (l == "total") {
+                // Items section ends a couple lines before "Total Amount"
+                totalSectionStart = max(0, idx - 2)
+                print("[Parser] Total section detected at line \(idx), items end at \(totalSectionStart)")
+                break
+            }
+        }
+
         var i = 0
         var foundTotalSection = false
         var foundItemSection = false  // True once we've seen first actual item
@@ -112,8 +124,8 @@ struct ReceiptParser {
                 continue
             }
 
-            // Check for total section markers
-            if lower.contains("total amount") || (lower.contains("total") && !lower.contains("subtotal")) {
+            // Check for total section markers (both dynamic and pre-scanned)
+            if i >= totalSectionStart || lower.contains("total amount") || (lower.contains("total") && !lower.contains("subtotal")) {
                 foundTotalSection = true
             }
 
@@ -175,7 +187,7 @@ struct ReceiptParser {
                 // This is a name-only line. Look ahead for the price.
                 var priceVal: Double? = nil
                 var skip = 1
-                while i + skip < trimmedLines.count {
+                while i + skip < trimmedLines.count && i + skip < totalSectionStart {
                     let nextLine = trimmedLines[i + skip]
                     if isSupplementaryLine(nextLine) {
                         skip += 1
