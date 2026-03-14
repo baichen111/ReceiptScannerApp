@@ -34,16 +34,70 @@ struct OCRService {
 
                 let observations = request.results as? [VNRecognizedTextObservation] ?? []
 
-                // Sort observations top-to-bottom based on bounding box
-                let sorted = observations.sorted { a, b in
-                    a.boundingBox.origin.y > b.boundingBox.origin.y
+                // Extract text with bounding box info
+                struct TextBlock {
+                    let text: String
+                    let minX: CGFloat  // Left edge (0 = left, 1 = right)
+                    let midY: CGFloat  // Vertical center (0 = bottom, 1 = top in Vision coords)
+                    let height: CGFloat
                 }
 
-                let strings = sorted.compactMap { observation in
-                    observation.topCandidates(1).first?.string
+                let blocks: [TextBlock] = observations.compactMap { obs in
+                    guard let candidate = obs.topCandidates(1).first else { return nil }
+                    let box = obs.boundingBox
+                    return TextBlock(
+                        text: candidate.string,
+                        minX: box.origin.x,
+                        midY: box.origin.y + box.height / 2,
+                        height: box.height
+                    )
                 }
 
-                print("[OCR] Recognized \(strings.count) lines")
+                print("[OCR] Recognized \(blocks.count) text blocks")
+                for (i, b) in blocks.enumerated() {
+                    print("[OCR] raw [\(i)] x=\(String(format: "%.3f", b.minX)) y=\(String(format: "%.3f", b.midY)) h=\(String(format: "%.3f", b.height)) '\(b.text)'")
+                }
+
+                // Group blocks into rows by similar Y position
+                // Two blocks are on the same row if their Y centers are within half
+                // the average text height of each other
+                let avgHeight = blocks.isEmpty ? 0.01 : blocks.map(\.height).reduce(0, +) / CGFloat(blocks.count)
+                let yThreshold = avgHeight * 0.6
+
+                // Sort by Y descending (top of receipt first in Vision coords)
+                let sortedBlocks = blocks.sorted { $0.midY > $1.midY }
+
+                var rows: [[TextBlock]] = []
+                for block in sortedBlocks {
+                    // Try to add to existing row
+                    var added = false
+                    for ri in rows.indices {
+                        let rowY = rows[ri].map(\.midY).reduce(0, +) / CGFloat(rows[ri].count)
+                        if abs(block.midY - rowY) < yThreshold {
+                            rows[ri].append(block)
+                            added = true
+                            break
+                        }
+                    }
+                    if !added {
+                        rows.append([block])
+                    }
+                }
+
+                // Sort rows top-to-bottom (highest Y first)
+                rows.sort { row1, row2 in
+                    let y1 = row1.map(\.midY).reduce(0, +) / CGFloat(row1.count)
+                    let y2 = row2.map(\.midY).reduce(0, +) / CGFloat(row2.count)
+                    return y1 > y2
+                }
+
+                // Within each row, sort blocks left-to-right and join
+                let strings: [String] = rows.map { row in
+                    let sorted = row.sorted { $0.minX < $1.minX }
+                    return sorted.map(\.text).joined(separator: " ")
+                }
+
+                print("[OCR] Grouped into \(strings.count) lines")
                 for (i, s) in strings.enumerated() {
                     print("[OCR] [\(i)] \(s)")
                 }
