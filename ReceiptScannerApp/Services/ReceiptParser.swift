@@ -212,26 +212,33 @@ struct ReceiptParser {
                 }
 
                 // If no name found above, look ahead for name (price before name pattern)
+                // But only if that name doesn't already have its own price below it
                 if nameVal == nil {
                     var k = i + 1
-                    while k < trimmedLines.count {
+                    // Skip supplementary lines to find a potential name
+                    while k < trimmedLines.count && isSupplementaryLine(trimmedLines[k]) {
+                        k += 1
+                    }
+                    if k < trimmedLines.count {
                         let nextLine = trimmedLines[k]
-                        if isSupplementaryLine(nextLine) {
-                            k += 1
-                            continue
-                        }
                         let nextName = extractItemName(from: nextLine)
-                        if nextName.count >= 3 && extractPrice(from: nextLine) == nil {
-                            // Check it's not an excluded keyword line
-                            let nextLower = nextLine.lowercased()
-                            let nextExcluded = excludeKeywords.contains { nextLower.contains($0) }
-                            if !nextExcluded {
+                        let nextLower = nextLine.lowercased()
+                        let nextExcluded = excludeKeywords.contains { nextLower.contains($0) }
+                        if nextName.count >= 3 && extractPrice(from: nextLine) == nil && !nextExcluded {
+                            // Check if this name has its own price on the line after it
+                            var m = k + 1
+                            while m < trimmedLines.count && isSupplementaryLine(trimmedLines[m]) {
+                                m += 1
+                            }
+                            let nameHasOwnPrice = m < trimmedLines.count
+                                && extractPrice(from: trimmedLines[m]) != nil
+                                && !hasLetters(trimmedLines[m])
+                            if !nameHasOwnPrice {
+                                // Safe to claim this name — it has no price of its own
                                 nameVal = nextName
-                                // Mark that we consumed the next name line
                                 i = k // will be incremented at end of loop
                             }
                         }
-                        break
                     }
                 }
 
